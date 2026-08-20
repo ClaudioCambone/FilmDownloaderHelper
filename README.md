@@ -1,54 +1,112 @@
-# Telegram Download Assistant (Polling, Local)
+# Telegram Download Assistant (Local Polling)
 
-Bot Telegram locale in polling (`getUpdates`) per cercare contenuti da una sorgente configurata e inviare aggiunte a qBittorrent.
+A local Telegram bot that runs in polling mode (`getUpdates`) to search content from a configured source and add selected results to qBittorrent.
 
 ## Project Status
 
-- Runtime attivo: locale (questo progetto)
-- Modalita': polling, non webhook
-- Configurazione Cloudflare Worker/Webhook: legacy (vedi progetto `telegram-ai-bot`)
+- Active runtime: local polling (`telegram-download-assistant`)
+- Not using webhook mode
+- Previous Cloudflare Worker/webhook setup is legacy (see `telegram-ai-bot`)
 
-## Features
+## What This Project Does
 
-- Comandi Telegram per ricerca film/serie
-- Pulsanti inline per aggiunta rapida in qBittorrent
-- Filtri ricerca per quality, lingua, season, episode
-- Whitelist per `chat_id` e/o `username`
+- Handles Telegram commands for movies and TV series search
+- Shows inline buttons to add results directly to qBittorrent
+- Supports search filters: `quality`, `language`, `season`, `episode`
+- Restricts access with Telegram allowlists (`chat_id` and/or `username`)
 
 ## Requirements
 
 1. Node.js 20+
-2. qBittorrent con WebUI abilitata
-3. Token bot Telegram (BotFather)
+2. qBittorrent installed with WebUI enabled
+3. A Telegram bot token from BotFather
 
-## Quick Start
+## Installation
 
-1. Crea il file di configurazione
+1. Install dependencies
+
+```powershell
+npm install
+```
+
+2. Create your local environment file
 
 ```powershell
 copy .env.example .env
 ```
 
-2. Configura `.env`
+3. Configure `.env` (see details below)
+
+## Environment Variables
+
+Required:
 
 - `BOT_TOKEN`
 - `QBIT_USERNAME`
 - `QBIT_PASSWORD`
-- Opzionali whitelist:
-	- `TELEGRAM_ALLOWED_CHAT_IDS=154770509,123456789`
-	- `TELEGRAM_ALLOWED_USERNAMES=claudiocamb,@amico1`
 
-3. Disabilita webhook (obbligatorio per polling)
+Common:
+
+- `QBIT_URL` (default: `http://127.0.0.1:8080`)
+- `MOVIES_PATH`
+- `TV_PATH`
+- `POLL_INTERVAL_MS`
+
+Source API:
+
+- `SOURCE_SEARCH_URL`
+- `SOURCE_API_KEY` (optional if your endpoint is public)
+- `SOURCE_AUTH_HEADER` (default: `Authorization`)
+- `SOURCE_AUTH_PREFIX` (default: `Bearer`)
+- `SOURCE_RESULT_LIMIT`
+- `SOURCE_TIMEOUT_MS`
+- `SOURCE_VERIFIED` (recommended: `true`)
+
+Allowlist (optional but recommended):
+
+- `TELEGRAM_ALLOWED_CHAT_IDS=154770509,123456789`
+- `TELEGRAM_ALLOWED_USERNAMES=yourname,@friendname`
+
+## TorrentClaw Token Example
+
+If you use TorrentClaw as your source API:
+
+```env
+SOURCE_SEARCH_URL=https://torrentclaw.com/api/v1/search
+SOURCE_API_KEY=your_torrentclaw_token_here
+SOURCE_AUTH_HEADER=Authorization
+SOURCE_AUTH_PREFIX=Bearer
+SOURCE_VERIFIED=true
+```
+
+With this setup, requests are sent as:
+
+- `Authorization: Bearer <token>`
+
+If your source does not require authentication, leave `SOURCE_API_KEY` empty.
+
+## Important: Disable Webhook
+
+This project uses polling, so webhook must be disabled for the same bot token:
 
 ```powershell
-$BOT_TOKEN="IL_TUO_TOKEN"
+$BOT_TOKEN="YOUR_BOT_TOKEN"
 Invoke-RestMethod "https://api.telegram.org/bot$BOT_TOKEN/deleteWebhook"
 ```
 
-4. Avvia
+## Run the Bot
+
+Direct run:
 
 ```powershell
 node index.js
+```
+
+Using helper scripts in this repo:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start-manual.ps1
+powershell -ExecutionPolicy Bypass -File .\stop-manual.ps1
 ```
 
 ## Telegram Commands
@@ -58,31 +116,43 @@ node index.js
 - `/status`
 - `/addfilm <magnet/url>`
 - `/addserie <magnet/url>`
-- `/findfilm [quality] | [lingua] | <titolo>`
-- `/findserie [quality] | [lingua] | <titolo> | [season] | [episode]`
+- `/findfilm [quality] | [language] | <title>`
+- `/findserie [quality] | [language] | <title> | [season] | [episode]`
 
-Esempi serie:
+TV series examples:
 
 - `/findserie the office | 2`
 - `/findserie the office | 2 | 5`
 - `/findserie the office | season=2`
 - `/findserie the office | stagione=2 | episode=5`
 
-Regola: `episode` richiede sempre `season`.
+Rule:
 
-## Security Checklist (Before Publishing)
+- `episode` can only be used when `season` is provided.
 
-1. Non committare mai `.env`
-2. Usa solo `.env.example` con placeholder
-3. Ruota token/API key se sono stati esposti in chat, log o commit precedenti
-4. Verifica che `bot.log` non venga pubblicato
+## Security Notes (For Public Repositories)
 
-Questo repository include gia:
+1. Never commit `.env`
+2. Keep secrets only in your local `.env`
+3. Rotate any token that has ever been exposed in logs, chat, or commits
+4. Do not publish runtime logs (`bot.log`)
 
-- `.gitignore` con esclusione `.env`, `bot.log`, `bot.pid`, `node_modules`
-- `.env.example` sanitizzato
-- redazione dei query param sensibili nei log debug
+This repo already includes:
 
-## Legal Note
+- `.gitignore` entries for `.env`, `bot.log`, `bot.pid`, `node_modules`
+- Sanitized `.env.example`
+- Sensitive query parameter redaction in debug logs
 
-Usa il bot solo per contenuti che hai diritto di gestire/scaricare.
+## Troubleshooting
+
+- Bot does not respond:
+	- Check webhook is deleted
+	- Ensure only one polling process is running
+- `401` or `403` from source API:
+	- Verify `SOURCE_API_KEY`, `SOURCE_AUTH_HEADER`, `SOURCE_AUTH_PREFIX`
+- qBittorrent errors:
+	- Verify WebUI is enabled and credentials match `.env`
+
+## Legal
+
+Use this project only for content you are legally allowed to manage/download.
