@@ -1,143 +1,46 @@
-import fs from "node:fs";
-import path from "node:path";
 import { URLSearchParams } from "node:url";
 import { randomUUID } from "node:crypto";
+import { config } from "./src/config.js";
+import {
+  createLogger,
+  headersToLogObject,
+  redactQueryParamsForLog,
+  serializeError,
+} from "./src/logger.js";
+import { createQbitClient } from "./src/qbit-client.js";
 
-function loadEnvFile() {
-  const envPath = path.resolve(process.cwd(), ".env");
-  if (!fs.existsSync(envPath)) {
-    return;
-  }
+const {
+  botToken: BOT_TOKEN,
+  allowedChatIds: TELEGRAM_ALLOWED_CHAT_IDS,
+  allowedUsernames: TELEGRAM_ALLOWED_USERNAMES,
+  moviesPath: MOVIES_PATH,
+  tvPath: TV_PATH,
+  pollIntervalMs: POLL_INTERVAL_MS,
+  sourceSearchUrl: SOURCE_SEARCH_URL,
+  sourceApiKey: SOURCE_API_KEY,
+  sourceAuthHeader: SOURCE_AUTH_HEADER,
+  sourceAuthPrefix: SOURCE_AUTH_PREFIX,
+  sourceTimeoutMs: SOURCE_TIMEOUT_MS,
+  sourceResultLimit: SOURCE_RESULT_LIMIT,
+  sourceForceAuth: SOURCE_FORCE_AUTH,
+  sourceInclude: SOURCE_INCLUDE,
+  sourceAvailability: SOURCE_AVAILABILITY,
+  sourceSort: SOURCE_SORT,
+  sourceVerified: SOURCE_VERIFIED,
+  sourceApiKeyParam: SOURCE_API_KEY_PARAM,
+  sourceSendApiKeyInQuery: SOURCE_SEND_API_KEY_IN_QUERY,
+  sourceApiKeyHeader: SOURCE_API_KEY_HEADER,
+  sourceSendXApiKeyHeader: SOURCE_SEND_X_API_KEY_HEADER,
+  geminiApiKey: GEMINI_API_KEY,
+  geminiModel: GEMINI_MODEL,
+  geminiTimeoutMs: GEMINI_TIMEOUT_MS,
+  actionTtlMs: ACTION_TTL_MS,
+  actionMaxItems: ACTION_MAX_ITEMS,
+  logLevel: LOG_LEVEL,
+} = config;
 
-  const content = fs.readFileSync(envPath, "utf8");
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-    const idx = line.indexOf("=");
-    if (idx <= 0) {
-      continue;
-    }
-    const key = line.slice(0, idx).trim();
-    const value = line.slice(idx + 1).trim();
-    if (!(key in process.env)) {
-      process.env[key] = value;
-    }
-  }
-}
-
-loadEnvFile();
-
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const TELEGRAM_ALLOWED_CHAT_IDS = new Set(
-  (process.env.TELEGRAM_ALLOWED_CHAT_IDS || "")
-    .split(",")
-    .map((v) => v.trim())
-    .filter(Boolean),
-);
-const TELEGRAM_ALLOWED_USERNAMES = new Set(
-  (process.env.TELEGRAM_ALLOWED_USERNAMES || "")
-    .split(",")
-    .map((v) => v.trim().toLowerCase().replace(/^@/, ""))
-    .filter(Boolean),
-);
-const QBIT_URL = (process.env.QBIT_URL || "http://127.0.0.1:8080").replace(/\/$/, "");
-const QBIT_USERNAME = process.env.QBIT_USERNAME;
-const QBIT_PASSWORD = process.env.QBIT_PASSWORD;
-const MOVIES_PATH = process.env.MOVIES_PATH || "D:\\Film e Serie Tv\\Film";
-const TV_PATH = process.env.TV_PATH || "D:\\Film e Serie Tv\\Serie Tv";
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || "2000");
-const SOURCE_SEARCH_URL = process.env.SOURCE_SEARCH_URL || "";
-const SOURCE_API_KEY = process.env.SOURCE_API_KEY || "";
-const SOURCE_AUTH_HEADER = process.env.SOURCE_AUTH_HEADER || "Authorization";
-const SOURCE_AUTH_PREFIX = process.env.SOURCE_AUTH_PREFIX || "Bearer ";
-const SOURCE_TIMEOUT_MS = Number(process.env.SOURCE_TIMEOUT_MS || "10000");
-const SOURCE_RESULT_LIMIT = Number(process.env.SOURCE_RESULT_LIMIT || "8");
-const SOURCE_FORCE_AUTH = process.env.SOURCE_FORCE_AUTH
-  ? String(process.env.SOURCE_FORCE_AUTH).toLowerCase() === "true"
-  : Boolean(SOURCE_API_KEY);
-const SOURCE_INCLUDE = process.env.SOURCE_INCLUDE || "";
-const SOURCE_AVAILABILITY = process.env.SOURCE_AVAILABILITY || "all";
-const SOURCE_SORT = process.env.SOURCE_SORT || "relevance";
-const SOURCE_VERIFIED = process.env.SOURCE_VERIFIED || "true";
-const SOURCE_API_KEY_PARAM = process.env.SOURCE_API_KEY_PARAM || "api_Key";
-const SOURCE_SEND_API_KEY_IN_QUERY = String(process.env.SOURCE_SEND_API_KEY_IN_QUERY || "true").toLowerCase() === "true";
-const SOURCE_API_KEY_HEADER = process.env.SOURCE_API_KEY_HEADER || "x-api-key";
-const SOURCE_SEND_X_API_KEY_HEADER = String(process.env.SOURCE_SEND_X_API_KEY_HEADER || "true").toLowerCase() === "true";
-const ACTION_TTL_MS = Number(process.env.ACTION_TTL_MS || "900000");
-const ACTION_MAX_ITEMS = Number(process.env.ACTION_MAX_ITEMS || "500");
-const LOG_LEVEL = (process.env.LOG_LEVEL || "debug").toLowerCase();
-const LOG_LEVEL_ORDER = {
-  error: 0,
-  warn: 1,
-  info: 2,
-  debug: 3,
-};
-
-function shouldLog(level) {
-  const configured = LOG_LEVEL_ORDER[LOG_LEVEL] ?? LOG_LEVEL_ORDER.info;
-  const current = LOG_LEVEL_ORDER[level] ?? LOG_LEVEL_ORDER.info;
-  return current <= configured;
-}
-
-function log(level, event, meta = {}) {
-  if (!shouldLog(level)) {
-    return;
-  }
-  const ts = new Date().toISOString();
-  const body = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : "";
-  const line = `${ts} [${level.toUpperCase()}] ${event}${body}`;
-  if (level === "error") {
-    console.error(line);
-    return;
-  }
-  if (level === "warn") {
-    console.warn(line);
-    return;
-  }
-  console.log(line);
-}
-
-function serializeError(err) {
-  if (!err) {
-    return { message: "Unknown error" };
-  }
-  return {
-    name: err.name || "Error",
-    message: err.message || String(err),
-    cause: err.cause?.message || null,
-    stack: typeof err.stack === "string" ? err.stack.split("\n").slice(0, 4).join(" | ") : null,
-  };
-}
-
-function redactValue(key, value) {
-  if (value === undefined || value === null) {
-    return value;
-  }
-
-  const normalizedKey = String(key).toLowerCase();
-  if (normalizedKey.includes("authorization") || normalizedKey.includes("api-key") || normalizedKey.includes("api_key")) {
-    return "***redacted***";
-  }
-
-  return value;
-}
-
-function headersToLogObject(headers) {
-  return Object.fromEntries(
-    Array.from(headers.entries()).map(([key, value]) => [key, redactValue(key, value)]),
-  );
-}
-
-function redactQueryParamsForLog(searchParams) {
-  const sensitive = /(api[_-]?key|token|authorization|secret)/i;
-  const out = {};
-  for (const [key, value] of searchParams.entries()) {
-    out[key] = sensitive.test(key) ? "***redacted***" : value;
-  }
-  return out;
-}
+const log = createLogger(LOG_LEVEL);
+const qbitClient = createQbitClient({ config, log });
 
 function summarizePayload(payload) {
   if (Array.isArray(payload)) {
@@ -266,17 +169,10 @@ async function callAuthorizedSearchApi({ baseUrl, apiKey, query, timeoutMs = 100
   });
 }
 
-if (!BOT_TOKEN) {
-  console.error("Missing BOT_TOKEN in .env");
-  process.exit(1);
-}
-if (!QBIT_USERNAME || !QBIT_PASSWORD) {
-  console.error("Missing QBIT_USERNAME or QBIT_PASSWORD in .env");
-  process.exit(1);
-}
-
-let qbitCookie = "";
+let pollingRunning = false;
 const ACTION_STORE = new Map();
+const PENDING_INPUTS = new Map();
+const AI_CONVERSATIONS = new Map();
 
 function gcActionStore() {
   const now = Date.now();
@@ -326,126 +222,141 @@ function consumeAddAction(token) {
   return action;
 }
 
-async function qbitLogin() {
-  log("debug", "qbit.login.start", { url: QBIT_URL, username: QBIT_USERNAME });
-  const body = new URLSearchParams({
-    username: QBIT_USERNAME,
-    password: QBIT_PASSWORD,
+function saveTorrentAction({ action, hash, name }) {
+  gcActionStore();
+  const token = randomUUID().slice(0, 12);
+  ACTION_STORE.set(token, {
+    action,
+    hash,
+    name,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + ACTION_TTL_MS,
   });
+  return token;
+}
 
-  let res;
-  try {
-    res = await fetch(`${QBIT_URL}/api/v2/auth/login`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body,
-    });
-  } catch (err) {
-    throw new Error(
-      `Cannot reach qBittorrent WebUI at ${QBIT_URL}. ` +
-      "Verify qBittorrent is running, WebUI is enabled, and the port matches QBIT_URL.",
+function saveSearchAction({ queryText, kind, results, nextIndex }) {
+  gcActionStore();
+  const token = randomUUID().slice(0, 12);
+  ACTION_STORE.set(token, {
+    action: "more",
+    queryText,
+    kind,
+    results,
+    nextIndex,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + ACTION_TTL_MS,
+  });
+  return token;
+}
+
+function saveSearchWizard({ queryText, kind }) {
+  gcActionStore();
+  const token = randomUUID().slice(0, 12);
+  ACTION_STORE.set(token, {
+    action: "search_wizard",
+    queryText,
+    kind,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + ACTION_TTL_MS,
+  });
+  return token;
+}
+
+function getSearchWizard(token) {
+  const action = ACTION_STORE.get(token);
+  if (!action || action.action !== "search_wizard" || action.expiresAt <= Date.now()) {
+    ACTION_STORE.delete(token);
+    return null;
+  }
+  return action;
+}
+
+function takeSearchPage(token, pageSize = 3) {
+  const action = ACTION_STORE.get(token);
+  if (!action || action.action !== "more" || action.expiresAt <= Date.now()) {
+    ACTION_STORE.delete(token);
+    return null;
+  }
+
+  const results = action.results.slice(action.nextIndex, action.nextIndex + pageSize);
+  action.nextIndex += results.length;
+  const remainingResults = action.results.slice(action.nextIndex);
+  const hasMore = remainingResults.length > 0;
+  if (!hasMore) {
+    ACTION_STORE.delete(token);
+  }
+  return { ...action, results, remainingResults, hasMore };
+}
+
+const qbitLogin = () => qbitClient.login();
+const ensureCategory = (name, savePath) => qbitClient.ensureCategory(name, savePath);
+const addTorrent = (options) => qbitClient.addTorrent(options);
+const getTorrentsOverview = () => qbitClient.listTorrents();
+const setTorrentPaused = (hash, paused) => qbitClient.setPaused(hash, paused);
+
+function formatEta(seconds) {
+  const eta = Number(seconds);
+  if (!Number.isFinite(eta) || eta < 0 || eta >= 8640000) {
+    return "n/d";
+  }
+  const days = Math.floor(eta / 86400);
+  const hours = Math.floor((eta % 86400) / 3600);
+  const minutes = Math.floor((eta % 3600) / 60);
+  if (days) return `${days}g ${hours}h`;
+  if (hours) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "n/d";
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  return `${(value / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function formatSpeed(bytesPerSecond) {
+  const value = Number(bytesPerSecond);
+  if (!Number.isFinite(value) || value <= 0) return "0 MB/s";
+  return `${(value / 1024 ** 2).toFixed(2)} MB/s`;
+}
+
+function formatTorrentStatus(torrent, index) {
+  const progress = Number(torrent.progress || 0) * 100;
+  const state = String(torrent.state || "unknown");
+  const paused = state.includes("paused") || state === "stoppedDL" || state === "stoppedUP";
+  const complete = progress >= 100;
+  return [
+    `${index + 1}. ${torrent.name || "Senza titolo"}`,
+    `Stato: ${complete ? "Completato" : paused ? "In pausa" : state}`,
+    `Avanzamento: ${progress.toFixed(1)}%`,
+    `Spazio: ${formatBytes(torrent.downloaded)} / ${formatBytes(torrent.size)}`,
+    `Velocita: ${formatSpeed(torrent.dlspeed)}`,
+    `Tempo residuo: ${complete ? "Completato" : formatEta(torrent.eta)}`,
+  ].join("\n");
+}
+
+async function sendStatus(chatId, torrents, replyToMessageId) {
+  if (!torrents.length) {
+    await sendMessage(chatId, "Nessun download presente.", replyToMessageId);
+    return;
+  }
+
+  await sendMessage(chatId, `Download presenti: ${torrents.length}`, replyToMessageId);
+  for (let index = 0; index < torrents.length; index += 1) {
+    const torrent = torrents[index];
+    const paused = String(torrent.state || "").includes("paused") || torrent.state === "stoppedDL" || torrent.state === "stoppedUP";
+    const action = paused ? "resume" : "pause";
+    const label = paused ? "Resume" : "Pausa";
+    const token = saveTorrentAction({ action, hash: torrent.hash, name: torrent.name });
+    await sendMessageWithInlineButton(
+      chatId,
+      formatTorrentStatus(torrent, index),
+      label,
+      `torrent:${token}`,
+      replyToMessageId,
     );
   }
-
-  if (!res.ok) {
-    log("warn", "qbit.login.http_error", { status: res.status });
-    throw new Error(`qBittorrent login failed (${res.status})`);
-  }
-
-  const setCookie = res.headers.get("set-cookie") || "";
-  const sid = setCookie.split(";")[0];
-  if (!sid.startsWith("SID=")) {
-    throw new Error("qBittorrent did not return SID cookie");
-  }
-  qbitCookie = sid;
-  log("info", "qbit.login.success");
-}
-
-async function qbitFetch(endpoint, options = {}, retry = true) {
-  const headers = new Headers(options.headers || {});
-  if (qbitCookie) {
-    headers.set("cookie", qbitCookie);
-  }
-
-  const res = await fetch(`${QBIT_URL}${endpoint}`, {
-    ...options,
-    headers,
-  });
-
-  log("debug", "qbit.fetch.response", {
-    endpoint,
-    status: res.status,
-    retried: !retry,
-  });
-
-  if ((res.status === 403 || res.status === 401) && retry) {
-    log("warn", "qbit.fetch.auth_retry", { endpoint, status: res.status });
-    await qbitLogin();
-    return qbitFetch(endpoint, options, false);
-  }
-
-  return res;
-}
-
-async function ensureCategory(name, savePath) {
-  log("debug", "qbit.category.ensure", { name, savePath });
-  const body = new URLSearchParams({
-    category: name,
-    savePath,
-  });
-
-  const res = await qbitFetch("/api/v2/torrents/createCategory", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-  });
-
-  if (!res.ok && res.status !== 409) {
-    const text = await res.text();
-    throw new Error(`Cannot create category ${name}: ${res.status} ${text}`);
-  }
-
-  log("info", "qbit.category.ready", { name, status: res.status });
-}
-
-async function addTorrent({ source, category, savePath }) {
-  log("info", "torrent.add.start", {
-    category,
-    savePath,
-    sourceType: source.startsWith("magnet:?") ? "magnet" : "url",
-  });
-  const body = new URLSearchParams({
-    urls: source,
-    category,
-    savepath: savePath,
-    autoTMM: "false",
-  });
-
-  const res = await qbitFetch("/api/v2/torrents/add", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Add torrent failed: ${res.status} ${text}`);
-  }
-
-  log("info", "torrent.add.success", { category, savePath });
-}
-
-async function getTorrentsOverview() {
-  const res = await qbitFetch("/api/v2/torrents/info", { method: "GET" });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Cannot read torrents: ${res.status} ${text}`);
-  }
-  const torrents = await res.json();
-  log("debug", "torrent.overview.loaded", {
-    count: Array.isArray(torrents) ? torrents.length : 0,
-  });
-  return Array.isArray(torrents) ? torrents : [];
 }
 
 function isAllowedChat(chatId, username) {
@@ -482,7 +393,25 @@ async function telegramApi(method, payload) {
   return res.json();
 }
 
-async function sendMessage(chatId, text, replyToMessageId) {
+const BOT_COMMANDS = [
+  { command: "start", description: "Avvia il bot" },
+  { command: "help", description: "Mostra tutti i comandi" },
+  { command: "ask", description: "Fai una domanda all'AI" },
+  { command: "stopask", description: "Chiudi la conversazione AI" },
+  { command: "status", description: "Mostra lo stato dei download" },
+  { command: "addfilm", description: "Aggiunge un film da magnet o URL" },
+  { command: "addserie", description: "Aggiunge una serie da magnet o URL" },
+  { command: "findfilm", description: "Cerca un film" },
+  { command: "findserie", description: "Cerca una serie TV" },
+  { command: "stoppolling", description: "Arresta il polling locale" },
+];
+
+async function registerBotCommands() {
+  await telegramApi("setMyCommands", { commands: BOT_COMMANDS });
+  log("info", "telegram.commands.registered", { count: BOT_COMMANDS.length });
+}
+
+async function sendMessage(chatId, text, replyToMessageId, replyMarkup) {
   log("debug", "telegram.message.send", { chatId, replyToMessageId: Boolean(replyToMessageId) });
   const payload = {
     chat_id: chatId,
@@ -493,7 +422,19 @@ async function sendMessage(chatId, text, replyToMessageId) {
     payload.reply_parameters = { message_id: replyToMessageId };
   }
 
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup;
+  }
+
   await telegramApi("sendMessage", payload);
+}
+
+async function requestManualInput(chatId, text, messageId, command, placeholder) {
+  PENDING_INPUTS.set(String(chatId), { command });
+  await sendMessage(chatId, text, messageId, {
+    force_reply: true,
+    input_field_placeholder: placeholder,
+  });
 }
 
 async function sendMessageWithInlineButton(chatId, text, buttonText, callbackData, replyToMessageId) {
@@ -510,6 +451,34 @@ async function sendMessageWithInlineButton(chatId, text, buttonText, callbackDat
   }
 
   await telegramApi("sendMessage", payload);
+}
+
+async function sendSearchWizardQuality(chatId, queryText, kind, replyToMessageId) {
+  const token = saveSearchWizard({ queryText, kind });
+  await sendMessage(chatId, "Scegli la qualità:", replyToMessageId, {
+    inline_keyboard: [
+      [
+        { text: "480p", callback_data: `searchq:${token}:480p` },
+        { text: "720p", callback_data: `searchq:${token}:720p` },
+      ],
+      [
+        { text: "1080p", callback_data: `searchq:${token}:1080p` },
+        { text: "2160p", callback_data: `searchq:${token}:2160p` },
+      ],
+      [{ text: "Qualsiasi qualità", callback_data: `searchq:${token}:any` }],
+    ],
+  });
+}
+
+async function sendSearchWizardLanguage(chatId, token, replyToMessageId) {
+  await sendMessage(chatId, "Scegli la lingua:", replyToMessageId, {
+    inline_keyboard: [[
+      { text: "Italiano", callback_data: `searchl:${token}:ita` },
+      { text: "Inglese", callback_data: `searchl:${token}:eng` },
+      { text: "Originale", callback_data: `searchl:${token}:original` },
+      { text: "Qualsiasi lingua", callback_data: `searchl:${token}:any` },
+    ]],
+  });
 }
 
 async function sendPhoto(chatId, photoUrl, caption, replyToMessageId) {
@@ -577,8 +546,19 @@ async function sendLongMessage(chatId, text, replyToMessageId) {
       continue;
     }
 
-    for (let i = 0; i < block.length; i += maxLen) {
-      await sendMessage(chatId, block.slice(i, i + maxLen), replyToMessageId);
+    for (let start = 0; start < block.length;) {
+      let end = Math.min(start + maxLen, block.length);
+      if (end < block.length) {
+        const lastSpace = block.lastIndexOf(" ", end);
+        if (lastSpace > start) {
+          end = lastSpace;
+        }
+      }
+      await sendMessage(chatId, block.slice(start, end), replyToMessageId);
+      start = end;
+      while (block[start] === " ") {
+        start += 1;
+      }
     }
   }
 
@@ -600,17 +580,31 @@ function isValidTorrentSource(value) {
 }
 
 function parseFindCommand(text) {
-  const firstSpace = text.indexOf(" ");
-  if (firstSpace === -1) {
+  const match = text.match(/^\/\S+\s+([\s\S]+)$/);
+  if (!match) {
     return null;
   }
 
-  const payload = text.slice(firstSpace + 1).trim();
+  let payload = match[1].trim();
   if (!payload) {
     return null;
   }
 
   const allowedQualities = new Set(["480p", "720p", "1080p", "2160p"]);
+  let quality = "";
+  let lang = "";
+  const explicitFilters = [];
+  payload = payload.replace(/(?:quality|qualita|q)\s*[:=]\s*(480p|720p|1080p|2160p)\b/gi, (_, value) => {
+    quality = value.toLowerCase();
+    explicitFilters.push("quality");
+    return "";
+  });
+  payload = payload.replace(/(?:lang|language|lingua)\s*[:=]\s*([^|\s]+)\b/gi, (_, value) => {
+    lang = value.trim();
+    explicitFilters.push("lang");
+    return "";
+  });
+
   const parts = payload
     .split("|")
     .map((p) => p.trim())
@@ -620,11 +614,26 @@ function parseFindCommand(text) {
     return null;
   }
 
-  if (parts.length === 1) {
-    return { quality: "", lang: "", title: parts[0] };
+  if (!explicitFilters.length && parts.length === 1) {
+    const words = parts[0].split(/\s+/);
+    const languageCodes = new Set(["it", "ita", "italian", "en", "eng", "english", "fr", "fra", "de", "ger", "es", "spa"]);
+    if (allowedQualities.has(words[0].toLowerCase())) {
+      quality = words.shift().toLowerCase();
+    }
+    if (words.length && languageCodes.has(words[0].toLowerCase())) {
+      lang = words.shift();
+    }
+    if (quality || lang) {
+      const title = words.join(" ").replace(/^(["'])(.*)\1$/, "$2").trim();
+      return title ? { quality, lang, title } : null;
+    }
   }
 
-  if (parts.length === 2) {
+  if (!quality && !lang && parts.length === 1) {
+    return { quality: "", lang: "", title: parts[0].replace(/^(["'])(.*)\1$/, "$2").trim() };
+  }
+
+  if (!explicitFilters.length && parts.length === 2) {
     const first = parts[0].toLowerCase();
     const second = parts[1];
     if (!second) {
@@ -638,10 +647,18 @@ function parseFindCommand(text) {
     return { quality: "", lang: parts[0], title: second };
   }
 
-  const quality = parts[0].toLowerCase();
-  const lang = parts[1];
-  const title = parts.slice(2).join(" | ");
-  if (!allowedQualities.has(quality) || !lang || !title) {
+  if (!explicitFilters.length) {
+    quality = parts[0].toLowerCase();
+    lang = parts[1];
+  }
+
+  let titleParts = explicitFilters.length ? parts : parts.slice(2);
+  if (explicitFilters.length && quality && !lang && parts.length >= 2) {
+    lang = parts[0];
+    titleParts = parts.slice(1);
+  }
+  const title = titleParts.join(" | ").replace(/^(["'])(.*)\1$/, "$2").trim();
+  if ((quality && !allowedQualities.has(quality)) || !title) {
     return null;
   }
 
@@ -918,6 +935,31 @@ async function sendFormattedResults(chatId, queryText, kind, results, replyToMes
   }
 }
 
+async function sendMoreResultsButton(chatId, token, replyToMessageId) {
+  await sendMessageWithInlineButton(
+    chatId,
+    "Ci sono altri risultati disponibili.",
+    "Mostra altri",
+    `more:${token}`,
+    replyToMessageId,
+  );
+}
+
+async function sendSearchPage(chatId, queryText, kind, results, replyToMessageId) {
+  const page = results.slice(0, 3);
+  await sendFormattedResults(chatId, queryText, kind, page, replyToMessageId);
+
+  if (results.length > page.length) {
+    const token = saveSearchAction({
+      queryText,
+      kind,
+      results,
+      nextIndex: page.length,
+    });
+    await sendMoreResultsButton(chatId, token, replyToMessageId);
+  }
+}
+
 async function handleCallbackQuery(callbackQuery) {
   const callbackQueryId = callbackQuery?.id;
   const data = String(callbackQuery?.data || "").trim();
@@ -935,8 +977,84 @@ async function handleCallbackQuery(callbackQuery) {
     return;
   }
 
+  if (data.startsWith("searchq:")) {
+    const [, token, quality] = data.split(":");
+    const wizard = getSearchWizard(token);
+    if (!wizard || !["any", "480p", "720p", "1080p", "2160p"].includes(quality)) {
+      await answerCallbackQuery(callbackQueryId, "Ricerca scaduta. Rifai la ricerca.");
+      return;
+    }
+    wizard.quality = quality === "any" ? "" : quality;
+    await sendSearchWizardLanguage(chatId, token, messageId);
+    await answerCallbackQuery(callbackQueryId, `Qualità: ${quality}`);
+    return;
+  }
+
+  if (data.startsWith("searchl:")) {
+    const [, token, lang] = data.split(":");
+    const wizard = getSearchWizard(token);
+    if (!wizard || wizard.quality === undefined || !["any", "ita", "eng", "original"].includes(lang)) {
+      await answerCallbackQuery(callbackQueryId, "Ricerca scaduta. Rifai la ricerca.");
+      return;
+    }
+    ACTION_STORE.delete(token);
+    await answerCallbackQuery(callbackQueryId, `Lingua: ${lang}`);
+    const matches = await searchSource({
+      kind: wizard.kind,
+      title: wizard.queryText,
+      lang: lang === "any" ? "" : lang,
+      quality: wizard.quality,
+    });
+    if (!matches.length) {
+      await sendMessage(chatId, "Nessun risultato trovato per i criteri richiesti.", messageId);
+      return;
+    }
+    await sendSearchPage(chatId, wizard.queryText, wizard.kind, matches, messageId);
+    return;
+  }
+
   if (!data.startsWith("add:")) {
-    await answerCallbackQuery(callbackQueryId, "Azione non valida.");
+    if (data.startsWith("more:")) {
+      const page = takeSearchPage(data.slice(5));
+      if (!page) {
+        await answerCallbackQuery(callbackQueryId, "Risultati scaduti. Rifai la ricerca.");
+        return;
+      }
+
+      await sendFormattedResults(chatId, page.queryText, page.kind, page.results, messageId);
+      if (page.hasMore) {
+        const nextToken = saveSearchAction({
+          queryText: page.queryText,
+          kind: page.kind,
+          results: page.remainingResults,
+          nextIndex: 0,
+        });
+        await sendMoreResultsButton(chatId, nextToken, messageId);
+      }
+      await answerCallbackQuery(callbackQueryId, "Altri risultati caricati.");
+      return;
+    }
+
+    if (!data.startsWith("torrent:")) {
+      await answerCallbackQuery(callbackQueryId, "Azione non valida.");
+      return;
+    }
+
+    const torrentAction = consumeAddAction(data.slice(8));
+    if (!torrentAction) {
+      await answerCallbackQuery(callbackQueryId, "Azione scaduta. Rifai /status.");
+      return;
+    }
+
+    try {
+      await setTorrentPaused(torrentAction.hash, torrentAction.action === "pause");
+      await answerCallbackQuery(callbackQueryId, torrentAction.action === "pause" ? "Download in pausa." : "Download ripreso.");
+      await sendMessage(chatId, `${torrentAction.action === "pause" ? "In pausa" : "Ripreso"}: ${torrentAction.name}`, messageId);
+    } catch (err) {
+      log("error", "callback.torrent.error", { ...serializeError(err) });
+      await answerCallbackQuery(callbackQueryId, "Errore qBittorrent.");
+      await sendMessage(chatId, `Errore: ${err.message || "operazione fallita"}`, messageId);
+    }
     return;
   }
 
@@ -1146,9 +1264,52 @@ async function searchSource({ kind, title, lang, quality, season, episode }) {
     throw new Error(lastError?.message || "Ricerca sorgente fallita: nessuna risposta valida ricevuta.");
   }
 
-  const topResults = extractTopResultsFromPayload(payload, lang, 3);
+  const topResults = extractTopResultsFromPayload(payload, lang, 100);
   log("debug", "search.custom.results", { count: topResults.length });
   return topResults;
+}
+
+async function askGemini(question, history = []) {
+  if (!GEMINI_API_KEY) {
+    throw new Error("Gemini non configurato: aggiungi GEMINI_API_KEY nel file .env.");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: "Rispondi esclusivamente in italiano. Non mostrare il ragionamento interno. Mantieni una conversazione naturale ma concisa: rispondi in 3-4 frasi. Per identificare un film o una serie, indica il titolo più probabile, l'anno, una breve motivazione e al massimo un'alternativa. Se gli indizi non bastano, fai una sola domanda di chiarimento e usa il contesto della conversazione." }],
+          },
+          contents: [...history.map((message) => ({
+            role: message.role === "assistant" ? "model" : message.role,
+            parts: [{ text: message.content }],
+          })), { role: "user", parts: [{ text: question }] }],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
+        }),
+        signal: controller.signal,
+      },
+    );
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`Gemini ha restituito HTTP ${response.status}: ${details.slice(0, 200)}`);
+    }
+
+    const payload = await response.json();
+    const answer = payload.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim();
+    if (!answer) {
+      throw new Error("Gemini non ha restituito una risposta.");
+    }
+    return answer;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function formatHelp() {
@@ -1158,18 +1319,23 @@ function formatHelp() {
     "1) Comandi base",
     "/start - avvio bot",
     "/help - mostra questo riepilogo",
+    "/ask <domanda> - chiedi aiuto all'AI",
+    "/stopask - chiude la conversazione AI",
     "/status - stato download",
+    "/stoppolling - arresta il bot locale",
     "",
     "2) Aggiunta diretta",
     "/addfilm <magnet/url>",
     "/addserie <magnet/url>",
     "",
     "3) Ricerca film",
-    "Formato: /findfilm [quality] | [lingua] | <titolo>",
+    "Scrivi semplicemente il titolo, anche con gli spazi:",
     "Esempi:",
-    "/findfilm interstellar",
-    "/findfilm ita | interstellar",
-    "/findfilm 1080p | ita | interstellar",
+    "/findfilm The Dark Knight",
+    "/findfilm " + '"' + "Once Upon a Time in Hollywood" + '"',
+    "Con filtri opzionali:",
+    "/findfilm ita | The Dark Knight",
+    "/findfilm quality=1080p | lang=ita | The Dark Knight",
     "",
     "4) Ricerca serie",
     "Formato: /findserie [quality] | [lingua] | <titolo> | [season] | [episode]",
@@ -1194,6 +1360,11 @@ async function handleMessage(msg) {
   const messageId = msg.message_id;
   const text = (msg.text || "").trim();
   const username = msg.from?.username || "";
+  const command = text.split(/\s+/, 1)[0].toLowerCase();
+  const repliedCommand = String(msg.reply_to_message?.text || "")
+    .trim()
+    .toLowerCase()
+    .match(/^\/(ask|findfilm|findserie|addfilm|addserie)(?:@\S+)?$/)?.[1];
 
   if (!chatId || !text) {
     return;
@@ -1207,17 +1378,82 @@ async function handleMessage(msg) {
     return;
   }
 
-  if (text === "/start") {
+  const pendingInput = PENDING_INPUTS.get(String(chatId));
+  const pendingCommand = pendingInput?.command || (repliedCommand ? `/${repliedCommand}` : null);
+  if (pendingCommand && !text.startsWith("/")) {
+    PENDING_INPUTS.delete(String(chatId));
+    if (pendingCommand === "/findfilm") {
+      await sendSearchWizardQuality(chatId, text, "film", messageId);
+      return;
+    }
+    await handleMessage({ ...msg, text: `${pendingCommand} ${text}` });
+    return;
+  }
+
+  if (command === "/stopask" && text === command) {
+    AI_CONVERSATIONS.delete(String(chatId));
+    PENDING_INPUTS.delete(String(chatId));
+    await sendMessage(chatId, "Conversazione AI chiusa.", messageId);
+    return;
+  }
+
+  if (!text.startsWith("/") && AI_CONVERSATIONS.has(String(chatId))) {
+    const conversation = AI_CONVERSATIONS.get(String(chatId));
+    try {
+      const answer = await askGemini(text, conversation.history);
+      conversation.history.push(
+        { role: "user", content: text },
+        { role: "assistant", content: answer },
+      );
+      conversation.history = conversation.history.slice(-12);
+      await sendLongMessage(chatId, answer, messageId);
+    } catch (err) {
+      log("error", "gemini.ask.error", { ...serializeError(err) });
+      await sendMessage(chatId, `Errore AI: ${err.message || "risposta non disponibile"}`, messageId);
+    }
+    return;
+  }
+
+  if (command === "/start" && text === command) {
     await sendMessage(chatId, "Bot attivo. Usa /help per i comandi.", messageId);
     return;
   }
 
-  if (text === "/help") {
+  if (command === "/help" && text === command) {
     await sendMessage(chatId, formatHelp(), messageId);
     return;
   }
 
-  if (text.startsWith("/addfilm")) {
+  if (command === "/ask") {
+    if (text === command) {
+      await requestManualInput(chatId, "Scrivi la domanda da fare all'AI.", messageId, "/ask", "La tua domanda");
+      return;
+    }
+
+    try {
+      const question = text.slice(command.length).trim();
+      const conversation = AI_CONVERSATIONS.get(String(chatId)) || { history: [] };
+      const answer = await askGemini(question, conversation.history);
+      conversation.history.push(
+        { role: "user", content: question },
+        { role: "assistant", content: answer },
+      );
+      conversation.history = conversation.history.slice(-12);
+      AI_CONVERSATIONS.set(String(chatId), conversation);
+      await sendLongMessage(chatId, answer, messageId);
+    } catch (err) {
+      log("error", "gemini.ask.error", { ...serializeError(err) });
+      await sendMessage(chatId, `Errore AI: ${err.message || "risposta non disponibile"}`, messageId);
+    }
+    return;
+  }
+
+  if (command === "/addfilm") {
+    if (text === command) {
+      await requestManualInput(chatId, "Invia il magnet o l'URL del film.", messageId, "/addfilm", "Magnet o URL del film");
+      return;
+    }
+
     const source = parseAddCommand(text);
     if (!source || !isValidTorrentSource(source)) {
       await sendMessage(chatId, "Uso: /addfilm <magnet o URL torrent valido>", messageId);
@@ -1229,12 +1465,17 @@ async function handleMessage(msg) {
     return;
   }
 
-  if (text.startsWith("/findfilm")) {
+  if (command === "/findfilm") {
+    if (text === command) {
+      await requestManualInput(chatId, "Scrivi il titolo del film. Puoi aggiungere anche i filtri opzionali.", messageId, "/findfilm", "Titolo del film");
+      return;
+    }
+
     const parsed = parseFindCommand(text);
     if (!parsed) {
       await sendMessage(
         chatId,
-        "Uso: /findfilm <titolo> oppure /findfilm <lingua> | <titolo> oppure /findfilm <quality> | <lingua> | <titolo>",
+        "Scrivi: /findfilm Titolo del film. Filtri opzionali: quality=1080p e lang=ita.",
         messageId,
       );
       return;
@@ -1253,11 +1494,16 @@ async function handleMessage(msg) {
       return;
     }
 
-    await sendFormattedResults(chatId, queryText, "film", matches, messageId);
+    await sendSearchPage(chatId, queryText, "film", matches, messageId);
     return;
   }
 
-  if (text.startsWith("/addserie")) {
+  if (command === "/addserie") {
+    if (text === command) {
+      await requestManualInput(chatId, "Invia il magnet o l'URL della serie.", messageId, "/addserie", "Magnet o URL della serie");
+      return;
+    }
+
     const source = parseAddCommand(text);
     if (!source || !isValidTorrentSource(source)) {
       await sendMessage(chatId, "Uso: /addserie <magnet o URL torrent valido>", messageId);
@@ -1269,7 +1515,12 @@ async function handleMessage(msg) {
     return;
   }
 
-  if (text.startsWith("/findserie")) {
+  if (command === "/findserie") {
+    if (text === command) {
+      await requestManualInput(chatId, "Scrivi il titolo della serie e, se vuoi, stagione ed episodio.", messageId, "/findserie", "Titolo della serie");
+      return;
+    }
+
     const parsed = parseSeriesFindCommand(text);
     if (!parsed) {
       await sendMessage(
@@ -1307,21 +1558,19 @@ async function handleMessage(msg) {
       return;
     }
 
-    await sendFormattedResults(chatId, queryText, "serie", matches, messageId);
+    await sendSearchPage(chatId, queryText, "serie", matches, messageId);
     return;
   }
 
-  if (text === "/status") {
+  if (command === "/status" && text === command) {
     const torrents = await getTorrentsOverview();
-    const active = torrents.filter((t) => t.state && !String(t.state).includes("paused")).length;
-    const downloading = torrents.filter((t) => String(t.state).includes("downloading")).length;
-    const completed = torrents.filter((t) => t.progress >= 1).length;
+    await sendStatus(chatId, torrents, messageId);
+    return;
+  }
 
-    await sendMessage(
-      chatId,
-      `Totali: ${torrents.length}\nIn download: ${downloading}\nAttivi: ${active}\nCompletati: ${completed}`,
-      messageId,
-    );
+  if (command === "/stoppolling" && text === command) {
+    await sendMessage(chatId, "Polling arrestato. Per riavviare usa start-manual.ps1.", messageId);
+    pollingRunning = false;
     return;
   }
 
@@ -1338,9 +1587,10 @@ async function ensureSetup() {
 
 async function runPolling() {
   let offset = 0;
+  pollingRunning = true;
   log("info", "polling.start", { pollIntervalMs: POLL_INTERVAL_MS });
 
-  while (true) {
+  while (pollingRunning) {
     try {
       const updates = await telegramApi("getUpdates", {
         timeout: 25,
@@ -1390,9 +1640,16 @@ async function runPolling() {
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
   }
+  log("info", "polling.stop");
 }
 
 async function bootstrap() {
+  try {
+    await registerBotCommands();
+  } catch (err) {
+    log("warn", "telegram.commands.registration_failed", { error: err?.message || String(err) });
+  }
+
   try {
     await ensureSetup();
   } catch (err) {

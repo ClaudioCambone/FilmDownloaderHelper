@@ -12,14 +12,58 @@ A local Telegram bot that runs in polling mode (`getUpdates`) to search content 
 
 - Handles Telegram commands for movies and TV series search
 - Shows inline buttons to add results directly to qBittorrent
+- Shows search results in pages of three with a repeatable `Mostra altri` button
 - Supports search filters: `quality`, `language`, `season`, `episode`
 - Restricts access with Telegram allowlists (`chat_id` and/or `username`)
+
+## Project Structure
+
+```text
+index.js              Application entry point and polling orchestration
+src/config.js         Environment loading and typed runtime configuration
+src/logger.js         Structured logging and secret redaction helpers
+src/qbit-client.js    qBittorrent WebUI client and torrent controls
+start-manual.ps1      Manual background start
+stop-manual.ps1       Manual stop
+start-local-bot.ps1   Windows startup runner
+```
 
 ## Requirements
 
 1. Node.js 20+
 2. qBittorrent installed with WebUI enabled
 3. A Telegram bot token from BotFather
+
+Docker is optional for local Node.js usage. Docker Desktop (Windows/macOS) or Docker Engine with the Compose plugin (Linux) is required for the containerized setup.
+
+## Run With Docker Compose
+
+Docker Compose runs the bot and qBittorrent together on any supported host operating system. Download and configuration data are stored in named Docker volumes, so host-specific Windows paths are not required.
+
+1. Create and edit `.env` as described below.
+2. Start the stack:
+
+```bash
+docker compose up -d --build
+```
+
+3. Open qBittorrent WebUI at `http://localhost:8080` and complete its first-run setup. Set the WebUI username and password to the values used in `.env` (`QBIT_USERNAME` and `QBIT_PASSWORD`).
+4. Restart the bot after qBittorrent credentials are configured:
+
+```bash
+docker compose restart bot
+```
+
+Useful commands:
+
+```bash
+docker compose logs -f bot
+docker compose logs -f qbittorrent
+docker compose ps
+docker compose down
+```
+
+The Docker setup stores downloads in the qBittorrent volume under `/downloads/movies` and `/downloads/tv`. The Compose file overrides `QBIT_URL`, `MOVIES_PATH`, and `TV_PATH` for the container network; do not use `127.0.0.1` for `QBIT_URL` inside the bot container.
 
 ## Installation
 
@@ -41,26 +85,18 @@ copy .env.example .env
 
 Required:
 
-- `BOT_TOKEN`
-- `QBIT_USERNAME`
-- `QBIT_PASSWORD`
 
 Common:
 
-- `QBIT_URL` (default: `http://127.0.0.1:8080`)
-- `MOVIES_PATH`
-- `TV_PATH`
-- `POLL_INTERVAL_MS`
 
 Source API:
 
-- `SOURCE_SEARCH_URL`
-- `SOURCE_API_KEY` (optional if your endpoint is public)
-- `SOURCE_AUTH_HEADER` (default: `Authorization`)
-- `SOURCE_AUTH_PREFIX` (default: `Bearer`)
-- `SOURCE_RESULT_LIMIT`
-- `SOURCE_TIMEOUT_MS`
-- `SOURCE_VERIFIED` (recommended: `true`)
+
+Gemini (optional):
+
+- `GEMINI_API_KEY` (required for `/ask`)
+- `GEMINI_MODEL` (default: `gemini-2.0-flash`)
+- `GEMINI_TIMEOUT_MS` (default: `30000`)
 
 Allowlist (optional but recommended):
 
@@ -105,19 +141,32 @@ node index.js
 Using helper scripts in this repo:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\start-manual.ps1
-powershell -ExecutionPolicy Bypass -File .\stop-manual.ps1
+npm run start:local
+npm run stop:local
+```
+
+For a foreground process, use `npm start`.
+
+Before opening a pull request, run:
+
+```powershell
+npm run check
 ```
 
 ## Telegram Commands
 
 - `/start`
 - `/help`
+- `/ask <domanda>`
+- `/stopask` (chiude la conversazione AI)
 - `/status`
+- `/stoppolling`
 - `/addfilm <magnet/url>`
 - `/addserie <magnet/url>`
 - `/findfilm [quality] | [language] | <title>`
 - `/findserie [quality] | [language] | <title> | [season] | [episode]`
+
+After `/ask`, you can send follow-up messages without a command. Use `/stopask` to end the Gemini conversation.
 
 TV series examples:
 
@@ -126,9 +175,21 @@ TV series examples:
 - `/findserie the office | season=2`
 - `/findserie the office | stagione=2 | episode=5`
 
+Movie search accepts titles with spaces directly:
+
+- `/findfilm The Dark Knight`
+- `/findfilm "Once Upon a Time in Hollywood"`
+- `/findfilm quality=1080p | lang=ita | The Dark Knight`
+
+Quotes are optional and are only useful for making a title visually clear. The bot sends the complete title text to the configured source API, so spaces are preserved.
+
 Rule:
 
 - `episode` can only be used when `season` is provided.
+- Searches show three results at a time; press `Mostra altri` to load the next three when available.
+- `/status` shows progress, downloaded/total size, speed and remaining time for each torrent.
+- Each status entry has a `Pausa` or `Resume` button.
+- `/stoppolling` stops the bot process; qBittorrent downloads already running are not stopped.
 
 ## Security Notes (For Public Repositories)
 

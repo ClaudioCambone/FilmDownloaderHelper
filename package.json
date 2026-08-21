@@ -1,16 +1,16 @@
 {
   "name": "telegram-download-assistant",
   "version": "1.0.0",
-  "private": true,
+  "private": false,
   "description": "Local Telegram assistant for legal downloads via qBittorrent",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "start:local": "powershell -ExecutionPolicy Bypass -File .\\start-manual.ps1",
+    "stop:local": "powershell -ExecutionPolicy Bypass -File .\\stop-manual.ps1",
+    "check": "node --check index.js && node --check src/config.js && node --check src/logger.js && node --check src/qbit-client.js"
   },
   "engines": {
     "node": ">=20"
-  },
-  "dependencies": {
-    "cloudflared": "^0.7.3"
   }
 }

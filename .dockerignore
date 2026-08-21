@@ -1,0 +1,11 @@
+node_modules
+.env
+.git
+.gitignore
+bot.log
+bot-error.log
+startup.log
+bot.pid
+*.ps1
+*.bat
+README.md
