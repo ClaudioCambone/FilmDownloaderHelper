@@ -1392,9 +1392,17 @@ async function runPolling() {
   }
 }
 
-ensureSetup()
-  .then(runPolling)
-  .catch((err) => {
-    log("error", "startup.error", { error: err?.message || String(err) });
-    process.exit(1);
-  });
+async function bootstrap() {
+  try {
+    await ensureSetup();
+  } catch (err) {
+    log("warn", "startup.setup.degraded", { error: err?.message || String(err) });
+  }
+
+  await runPolling();
+}
+
+bootstrap().catch((err) => {
+  log("error", "startup.error", { error: err?.message || String(err) });
+  process.exit(1);
+});

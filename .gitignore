@@ -3,6 +3,8 @@ node_modules/
 
 # Runtime files
 bot.log
+bot-error.log
+startup.log
 bot.pid
 
 # Secrets
