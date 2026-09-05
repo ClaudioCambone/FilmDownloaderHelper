@@ -90,11 +90,12 @@ export function createQbitClient({ config, log }) {
       body: new URLSearchParams({ urls: source, category, savepath: savePath, autoTMM: "false" }),
     });
 
-    if (!response.ok) {
+    if (!response.ok && response.status !== 409) {
       const text = await response.text();
       throw new Error(`Add torrent failed: ${response.status} ${text}`);
     }
-    log("info", "torrent.add.success", { category, savePath });
+    log("info", "torrent.add.success", { category, savePath, alreadyPresent: response.status === 409 });
+    return { alreadyPresent: response.status === 409 };
   }
 
   async function listTorrents() {
@@ -131,11 +132,26 @@ export function createQbitClient({ config, log }) {
     }
   }
 
+  async function deleteTorrent(hash, deleteFiles = false) {
+    const response = await request("/api/v2/torrents/delete", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ hashes: hash, deleteFiles: String(deleteFiles) }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`qBittorrent delete failed: ${response.status} ${text}`);
+    }
+    log("info", "torrent.delete.success", { hash, deleteFiles });
+  }
+
   return {
     login,
     ensureCategory,
     addTorrent,
     listTorrents,
     setPaused,
+    deleteTorrent,
   };
 }

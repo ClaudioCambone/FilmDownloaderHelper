@@ -15,7 +15,12 @@ services:
       - "6881:6881/udp"
     volumes:
       - qbittorrent_config:/config
-      - downloads:/downloads
+      - type: bind
+        source: ${MOVIES_PATH}
+        target: /downloads/movies
+      - type: bind
+        source: ${TV_PATH}
+        target: /downloads/tv
     networks:
       - app-network
 
@@ -37,7 +42,6 @@ services:
 
 volumes:
   qbittorrent_config:
-  downloads:
 
 networks:
   app-network:

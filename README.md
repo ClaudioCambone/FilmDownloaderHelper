@@ -188,7 +188,7 @@ Rule:
 - `episode` can only be used when `season` is provided.
 - Searches show three results at a time; press `Mostra altri` to load the next three when available.
 - `/status` shows progress, downloaded/total size, speed and remaining time for each torrent.
-- Each status entry has a `Pausa` or `Resume` button.
+- Each status entry has `Pausa`/`Resume` and `🗑️ Elimina` buttons.
 - `/stoppolling` stops the bot process; qBittorrent downloads already running are not stopped.
 
 ## Security Notes (For Public Repositories)

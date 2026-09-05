@@ -294,6 +294,7 @@ const ensureCategory = (name, savePath) => qbitClient.ensureCategory(name, saveP
 const addTorrent = (options) => qbitClient.addTorrent(options);
 const getTorrentsOverview = () => qbitClient.listTorrents();
 const setTorrentPaused = (hash, paused) => qbitClient.setPaused(hash, paused);
+const deleteTorrent = (hash, deleteFiles) => qbitClient.deleteTorrent(hash, deleteFiles);
 
 function formatEta(seconds) {
   const eta = Number(seconds);
@@ -346,15 +347,20 @@ async function sendStatus(chatId, torrents, replyToMessageId) {
   for (let index = 0; index < torrents.length; index += 1) {
     const torrent = torrents[index];
     const paused = String(torrent.state || "").includes("paused") || torrent.state === "stoppedDL" || torrent.state === "stoppedUP";
-    const action = paused ? "resume" : "pause";
-    const label = paused ? "Resume" : "Pausa";
-    const token = saveTorrentAction({ action, hash: torrent.hash, name: torrent.name });
-    await sendMessageWithInlineButton(
+    const pauseResumeAction = paused ? "resume" : "pause";
+    const pauseResumeLabel = paused ? "Resume" : "Pausa";
+    const prToken = saveTorrentAction({ action: pauseResumeAction, hash: torrent.hash, name: torrent.name });
+    const delToken = saveTorrentAction({ action: "delete", hash: torrent.hash, name: torrent.name });
+    await sendMessage(
       chatId,
       formatTorrentStatus(torrent, index),
-      label,
-      `torrent:${token}`,
       replyToMessageId,
+      {
+        inline_keyboard: [[
+          { text: pauseResumeLabel, callback_data: `torrent:${prToken}` },
+          { text: "🗑️ Elimina", callback_data: `torrent:${delToken}` },
+        ]],
+      },
     );
   }
 }
@@ -411,12 +417,16 @@ async function registerBotCommands() {
   log("info", "telegram.commands.registered", { count: BOT_COMMANDS.length });
 }
 
-async function sendMessage(chatId, text, replyToMessageId, replyMarkup) {
+async function sendMessage(chatId, text, replyToMessageId, replyMarkup, parseMode) {
   log("debug", "telegram.message.send", { chatId, replyToMessageId: Boolean(replyToMessageId) });
   const payload = {
     chat_id: chatId,
     text: text.slice(0, 3900),
   };
+
+  if (parseMode) {
+    payload.parse_mode = parseMode;
+  }
 
   if (replyToMessageId) {
     payload.reply_parameters = { message_id: replyToMessageId };
@@ -481,12 +491,56 @@ async function sendSearchWizardLanguage(chatId, token, replyToMessageId) {
   });
 }
 
-async function sendPhoto(chatId, photoUrl, caption, replyToMessageId) {
+async function sendSeriesSeasonChoice(chatId, token, replyToMessageId) {
+  await sendMessage(chatId, "Scegli una stagione oppure cerca in tutta la serie:", replyToMessageId, {
+    inline_keyboard: [[
+      { text: "Inserisci stagione", callback_data: `series:${token}:season` },
+      { text: "Tutta la serie", callback_data: `series:${token}:all` },
+    ]],
+  });
+}
+
+async function sendSeriesEpisodeChoice(chatId, token, replyToMessageId) {
+  await sendMessage(chatId, "Cerca tutta la stagione oppure un episodio:", replyToMessageId, {
+    inline_keyboard: [[
+      { text: "Tutta la stagione", callback_data: `series:${token}:seasonall` },
+      { text: "Inserisci episodio", callback_data: `series:${token}:episode` },
+    ]],
+  });
+}
+
+async function runSeriesWizardSearch(chatId, token, replyToMessageId) {
+  const wizard = getSearchWizard(token);
+  if (!wizard) {
+    await sendMessage(chatId, "Ricerca scaduta. Rifai /findserie.", replyToMessageId);
+    return;
+  }
+
+  ACTION_STORE.delete(token);
+  const matches = await searchSource({
+    kind: "tv",
+    title: wizard.queryText,
+    lang: wizard.lang || "",
+    season: wizard.season,
+    episode: wizard.episode,
+  });
+  if (!matches.length) {
+    await sendMessage(chatId, "Nessun risultato trovato per i criteri richiesti.", replyToMessageId);
+    return;
+  }
+  await sendSearchPage(chatId, wizard.queryText, "serie", matches, replyToMessageId);
+}
+
+async function sendPhoto(chatId, photoUrl, caption, replyToMessageId, parseMode) {
   const payload = {
     chat_id: chatId,
     photo: photoUrl,
     caption: caption.slice(0, 1000),
   };
+
+  if (parseMode) {
+    payload.parse_mode = parseMode;
+  }
 
   if (replyToMessageId) {
     payload.reply_parameters = { message_id: replyToMessageId };
@@ -495,7 +549,7 @@ async function sendPhoto(chatId, photoUrl, caption, replyToMessageId) {
   await telegramApi("sendPhoto", payload);
 }
 
-async function sendPhotoWithInlineButton(chatId, photoUrl, caption, buttonText, callbackData, replyToMessageId) {
+async function sendPhotoWithInlineButton(chatId, photoUrl, caption, buttonText, callbackData, replyToMessageId, parseMode) {
   const payload = {
     chat_id: chatId,
     photo: photoUrl,
@@ -504,6 +558,10 @@ async function sendPhotoWithInlineButton(chatId, photoUrl, caption, buttonText, 
       inline_keyboard: [[{ text: buttonText, callback_data: callbackData }]],
     },
   };
+
+  if (parseMode) {
+    payload.parse_mode = parseMode;
+  }
 
   if (replyToMessageId) {
     payload.reply_parameters = { message_id: replyToMessageId };
@@ -813,6 +871,35 @@ function buildMagnet({ infoHash, title }) {
   return `magnet:?xt=urn:btih:${infoHash}&dn=${safeTitle}`;
 }
 
+function parseSeasonEpisode(torrent, record) {
+  let season = torrent?.season ?? record?.season ?? null;
+  let episode = torrent?.episode ?? record?.episode ?? null;
+
+  const raw = String(torrent?.rawTitle || torrent?.title || record?.rawTitle || "");
+  if (season === null || season === undefined) {
+    const sEpMatch = raw.match(/\bS(\d{1,2})\s*E(\d{1,3})\b/i);
+    if (sEpMatch) {
+      season = parseInt(sEpMatch[1], 10);
+      episode = parseInt(sEpMatch[2], 10);
+    } else {
+      const sMatch = raw.match(/\bS(\d{1,2})\b/i) || raw.match(/\bSeason\s*(\d{1,2})\b/i) || raw.match(/\bStagione\s*(\d{1,2})\b/i);
+      if (sMatch) {
+        season = parseInt(sMatch[1], 10);
+      }
+    }
+  } else if (episode === null || episode === undefined) {
+    const epMatch = raw.match(/\bE(\d{1,3})\b/i) || raw.match(/\bEp(?:isode)?\s*(\d{1,3})\b/i) || raw.match(/\bEpisodio\s*(\d{1,3})\b/i);
+    if (epMatch) {
+      episode = parseInt(epMatch[1], 10);
+    }
+  }
+
+  return {
+    season: typeof season === "number" && !Number.isNaN(season) ? season : null,
+    episode: typeof episode === "number" && !Number.isNaN(episode) ? episode : null,
+  };
+}
+
 function extractTopResultsFromPayload(payload, requestedLang, maxResults = 10) {
   const records = Array.isArray(payload?.results)
     ? payload.results
@@ -824,17 +911,75 @@ function extractTopResultsFromPayload(payload, requestedLang, maxResults = 10) {
   for (const record of records) {
     const title = record?.title || record?.name || "Senza titolo";
     const overview = String(record?.overview || "").trim();
-    const torrents = Array.isArray(record?.torrents) ? record.torrents : [];
+    const seasons = Array.isArray(record?.seasons) ? record.seasons : [];
 
-    for (const torrent of torrents) {
+    // Collect torrent items: from root record.torrents, or nested in seasons/episodes
+    const torrentItems = [];
+    if (Array.isArray(record?.torrents)) {
+      for (const t of record.torrents) {
+        torrentItems.push({ torrent: t, defaultSeason: null, defaultEpisode: null });
+      }
+    }
+    for (const s of seasons) {
+      if (Array.isArray(s?.torrents)) {
+        for (const t of s.torrents) {
+          torrentItems.push({ torrent: t, defaultSeason: s.season, defaultEpisode: null });
+        }
+      }
+      if (Array.isArray(s?.episodes)) {
+        for (const ep of s.episodes) {
+          if (Array.isArray(ep?.torrents)) {
+            for (const t of ep.torrents) {
+              torrentItems.push({ torrent: t, defaultSeason: s.season, defaultEpisode: ep.episode });
+            }
+          }
+        }
+      }
+    }
+
+    for (const item of torrentItems) {
+      const torrent = item.torrent;
+      const parsedSE = parseSeasonEpisode(torrent, record);
+      const season = parsedSE.season ?? item.defaultSeason ?? null;
+      const episode = parsedSE.episode ?? item.defaultEpisode ?? null;
+
+      let seasonObj = null;
+      let episodeObj = null;
+      if (season !== null) {
+        seasonObj = seasons.find((s) => Number(s?.season) === season) || null;
+        if (seasonObj && episode !== null && Array.isArray(seasonObj.episodes)) {
+          episodeObj = seasonObj.episodes.find((e) => Number(e?.episode) === episode) || null;
+        }
+      }
+
+      const episodeName = episodeObj?.name ? String(episodeObj.name).trim() : "";
+      const episodeOverview = episodeObj?.overview ? String(episodeObj.overview).trim() : "";
+      const posterUrl = episodeObj?.stillUrl || seasonObj?.posterUrl || record?.posterUrl || record?.backdropUrl || "";
+      const finalOverview = episodeOverview || overview;
+
+      let displayTitle = title;
+      if (season !== null) {
+        const sStr = `S${String(season).padStart(2, "0")}`;
+        if (episode !== null) {
+          const eStr = `E${String(episode).padStart(2, "0")}`;
+          displayTitle = `${title} - ${sStr}${eStr}${episodeName ? ` (${episodeName})` : ""}`;
+        } else {
+          displayTitle = `${title} - ${sStr} (Stagione Completa)`;
+        }
+      }
+
       const audioLangs = getAudioLangs(torrent);
       const magnet = torrent?.magnet || torrent?.magnetUrl || torrent?.download || torrent?.url
-        || buildMagnet({ infoHash: torrent?.infoHash, title });
+        || buildMagnet({ infoHash: torrent?.infoHash, title: displayTitle });
 
       rows.push({
         title,
-        overview,
-        posterUrl: record?.posterUrl || "",
+        displayTitle,
+        season,
+        episode,
+        episodeName,
+        overview: finalOverview,
+        posterUrl,
         quality: torrent?.quality || "n/d",
         lang: audioLangs.length ? audioLangs.join(", ") : "n/d",
         magnet: magnet || "n/d",
@@ -861,35 +1006,57 @@ function extractTopResultsFromPayload(payload, requestedLang, maxResults = 10) {
 
 function truncateText(value, max = 260) {
   if (!value) {
-    return "n/d";
+    return "";
   }
   return value.length > max ? `${value.slice(0, max - 1)}...` : value;
 }
 
 function formatResultForTelegram(result, index) {
-  return [
-    `Risultato ${index + 1}`,
-    `Title: ${result.title}`,
-    `Overview: ${truncateText(result.overview, 220)}`,
-    `Quality: ${result.quality}`,
-    `Lang (audio): ${result.lang}`,
-    `Size: ${result.sizeGb}`,
-    `Seeders: ${result.seeders}`,
-    `Leechers: ${result.leechers}`,
-  ].join("\n");
+  const title = result.displayTitle || result.title;
+  const lines = [
+    `🎬 *${index + 1}. ${title}*`,
+  ];
+
+  if (result.season !== null && result.season !== undefined) {
+    const sStr = `S${String(result.season).padStart(2, "0")}`;
+    if (result.episode !== null && result.episode !== undefined) {
+      const eStr = `E${String(result.episode).padStart(2, "0")}`;
+      const epExtra = result.episodeName ? ` — _${result.episodeName}_` : "";
+      lines.push(`📺 ${sStr}${eStr}${epExtra}`);
+    } else {
+      lines.push(`📺 ${sStr} (Stagione Completa)`);
+    }
+  }
+
+  if (result.overview) {
+    lines.push(`📝 _${truncateText(result.overview, 180)}_`);
+  }
+
+  lines.push(
+    `🎞 Qualità: ${result.quality}`,
+    `🗣 Lingua: ${result.lang}`,
+    `💾 Dimensione: ${result.sizeGb}`,
+    `⬆️ Seeders: ${result.seeders}`,
+  );
+
+  return lines.join("\n");
 }
 
 async function sendFormattedResults(chatId, queryText, kind, results, replyToMessageId) {
   await sendMessage(
     chatId,
-    `Trovati ${results.length} risultati per \"${queryText}\" (${kind}).`,
+    `🔍 *Trovati ${results.length} risultati per "${queryText}" (${kind}):*`,
     replyToMessageId,
+    null,
+    "Markdown",
   );
 
   for (let i = 0; i < results.length; i += 1) {
     const result = results[i];
     const cardText = formatResultForTelegram(result, i);
-    const hasPoster = typeof result.posterUrl === "string" && /^https?:\/\//i.test(result.posterUrl);
+    const posterUrl = (typeof result.posterUrl === "string" && /^https?:\/\//i.test(result.posterUrl))
+      ? result.posterUrl
+      : "";
     const isFilm = kind === "film";
     const category = isFilm ? "Film" : "SerieTv";
     const savePath = isFilm ? MOVIES_PATH : TV_PATH;
@@ -899,39 +1066,34 @@ async function sendFormattedResults(chatId, queryText, kind, results, replyToMes
         category,
         savePath,
         source: result.magnet,
-        title: result.title,
+        title: result.displayTitle || result.title,
       })
       : "";
-    const buttonText = isFilm ? "Aggiungi Film" : "Aggiungi Serie";
+    const buttonText = isFilm ? "📥 Scarica Film" : "📥 Scarica Serie";
     const callbackData = addToken ? `add:${addToken}` : "";
 
-    if (hasPoster) {
+    if (posterUrl) {
       try {
         if (callbackData) {
-          await sendPhotoWithInlineButton(chatId, result.posterUrl, cardText, buttonText, callbackData, replyToMessageId);
+          await sendPhotoWithInlineButton(chatId, posterUrl, cardText, buttonText, callbackData, replyToMessageId, "Markdown");
         } else {
-          await sendPhoto(chatId, result.posterUrl, cardText, replyToMessageId);
+          await sendPhoto(chatId, posterUrl, cardText, replyToMessageId, "Markdown");
         }
+        continue;
       } catch (err) {
         log("warn", "telegram.photo.send_failed", {
           index: i,
           title: result.title,
           ...serializeError(err),
         });
-        if (callbackData) {
-          await sendMessageWithInlineButton(chatId, cardText, buttonText, callbackData, replyToMessageId);
-        } else {
-          await sendMessage(chatId, cardText, replyToMessageId);
-        }
-      }
-    } else {
-      if (callbackData) {
-        await sendMessageWithInlineButton(chatId, cardText, buttonText, callbackData, replyToMessageId);
-      } else {
-        await sendMessage(chatId, cardText, replyToMessageId);
       }
     }
 
+    const replyMarkup = callbackData
+      ? { inline_keyboard: [[{ text: buttonText, callback_data: callbackData }]] }
+      : undefined;
+
+    await sendMessage(chatId, cardText, replyToMessageId, replyMarkup, "Markdown");
   }
 }
 
@@ -993,7 +1155,19 @@ async function handleCallbackQuery(callbackQuery) {
   if (data.startsWith("searchl:")) {
     const [, token, lang] = data.split(":");
     const wizard = getSearchWizard(token);
-    if (!wizard || wizard.quality === undefined || !["any", "ita", "eng", "original"].includes(lang)) {
+    if (!wizard || !["any", "ita", "eng", "original"].includes(lang)) {
+      await answerCallbackQuery(callbackQueryId, "Ricerca scaduta. Rifai la ricerca.");
+      return;
+    }
+
+    if (wizard.kind === "serie") {
+      wizard.lang = lang === "any" ? "" : lang;
+      await sendSeriesSeasonChoice(chatId, token, messageId);
+      await answerCallbackQuery(callbackQueryId, `Lingua: ${lang}`);
+      return;
+    }
+
+    if (wizard.quality === undefined) {
       await answerCallbackQuery(callbackQueryId, "Ricerca scaduta. Rifai la ricerca.");
       return;
     }
@@ -1011,6 +1185,44 @@ async function handleCallbackQuery(callbackQuery) {
     }
     await sendSearchPage(chatId, wizard.queryText, wizard.kind, matches, messageId);
     return;
+  }
+
+  if (data.startsWith("series:")) {
+    const [, token, choice] = data.split(":");
+    const wizard = getSearchWizard(token);
+    if (!wizard || wizard.kind !== "serie") {
+      await answerCallbackQuery(callbackQueryId, "Ricerca scaduta. Rifai /findserie.");
+      return;
+    }
+
+    if (choice === "all") {
+      await answerCallbackQuery(callbackQueryId, "Ricerca in tutta la serie.");
+      await runSeriesWizardSearch(chatId, token, messageId);
+      return;
+    }
+    if (choice === "season") {
+      PENDING_INPUTS.set(String(chatId), { type: "serie_season", token });
+      await sendMessage(chatId, "Scrivi il numero della stagione.", messageId, {
+        force_reply: true,
+        input_field_placeholder: "Numero stagione, ad esempio 2",
+      });
+      await answerCallbackQuery(callbackQueryId, "Inserisci il numero della stagione.");
+      return;
+    }
+    if (choice === "seasonall") {
+      await answerCallbackQuery(callbackQueryId, `Stagione ${wizard.season}: tutti gli episodi.`);
+      await runSeriesWizardSearch(chatId, token, messageId);
+      return;
+    }
+    if (choice === "episode") {
+      PENDING_INPUTS.set(String(chatId), { type: "serie_episode", token });
+      await sendMessage(chatId, `Scrivi il numero dell'episodio della stagione ${wizard.season}.`, messageId, {
+        force_reply: true,
+        input_field_placeholder: "Numero episodio, ad esempio 5",
+      });
+      await answerCallbackQuery(callbackQueryId, "Inserisci il numero dell'episodio.");
+      return;
+    }
   }
 
   if (!data.startsWith("add:")) {
@@ -1046,6 +1258,19 @@ async function handleCallbackQuery(callbackQuery) {
       return;
     }
 
+    if (torrentAction.action === "delete") {
+      try {
+        await deleteTorrent(torrentAction.hash, false);
+        await answerCallbackQuery(callbackQueryId, "Torrent eliminato.");
+        await sendMessage(chatId, `🗑️ Eliminato da qBittorrent: ${torrentAction.name}`, messageId);
+      } catch (err) {
+        log("error", "callback.torrent.error", { ...serializeError(err) });
+        await answerCallbackQuery(callbackQueryId, "Errore eliminazione qBittorrent.");
+        await sendMessage(chatId, `Errore: ${err.message || "operazione fallita"}`, messageId);
+      }
+      return;
+    }
+
     try {
       await setTorrentPaused(torrentAction.hash, torrentAction.action === "pause");
       await answerCallbackQuery(callbackQueryId, torrentAction.action === "pause" ? "Download in pausa." : "Download ripreso.");
@@ -1066,15 +1291,15 @@ async function handleCallbackQuery(callbackQuery) {
   }
 
   try {
-    await addTorrent({
+    const result = await addTorrent({
       source: action.source,
       category: action.category,
       savePath: action.savePath,
     });
-    await answerCallbackQuery(callbackQueryId, "Aggiunto a qBittorrent.");
+    await answerCallbackQuery(callbackQueryId, result.alreadyPresent ? "Torrent già presente." : "Aggiunto a qBittorrent.");
     await sendMessage(
       chatId,
-      `Aggiunto: ${action.title}\nCategoria: ${action.category}\nPercorso: ${action.savePath}`,
+      `${result.alreadyPresent ? "Già presente" : "Aggiunto"}: ${action.title}\nCategoria: ${action.category}\nPercorso: ${action.savePath}`,
       messageId,
     );
   } catch (err) {
@@ -1379,11 +1604,40 @@ async function handleMessage(msg) {
   }
 
   const pendingInput = PENDING_INPUTS.get(String(chatId));
+  if (pendingInput?.type === "serie_season" && !text.startsWith("/")) {
+    const wizard = getSearchWizard(pendingInput.token);
+    PENDING_INPUTS.delete(String(chatId));
+    if (!wizard || !/^\d+$/.test(text) || Number(text) < 1) {
+      await sendMessage(chatId, "Inserisci un numero di stagione valido, poi rifai /findserie.", messageId);
+      return;
+    }
+    wizard.season = Number(text);
+    await sendSeriesEpisodeChoice(chatId, pendingInput.token, messageId);
+    return;
+  }
+
+  if (pendingInput?.type === "serie_episode" && !text.startsWith("/")) {
+    const wizard = getSearchWizard(pendingInput.token);
+    PENDING_INPUTS.delete(String(chatId));
+    if (!wizard || !/^\d+$/.test(text) || Number(text) < 1) {
+      await sendMessage(chatId, "Inserisci un numero di episodio valido, poi rifai /findserie.", messageId);
+      return;
+    }
+    wizard.episode = Number(text);
+    await runSeriesWizardSearch(chatId, pendingInput.token, messageId);
+    return;
+  }
+
   const pendingCommand = pendingInput?.command || (repliedCommand ? `/${repliedCommand}` : null);
   if (pendingCommand && !text.startsWith("/")) {
     PENDING_INPUTS.delete(String(chatId));
     if (pendingCommand === "/findfilm") {
       await sendSearchWizardQuality(chatId, text, "film", messageId);
+      return;
+    }
+    if (pendingCommand === "/findserie") {
+      const token = saveSearchWizard({ queryText: text, kind: "serie" });
+      await sendSearchWizardLanguage(chatId, token, messageId);
       return;
     }
     await handleMessage({ ...msg, text: `${pendingCommand} ${text}` });
@@ -1517,7 +1771,7 @@ async function handleMessage(msg) {
 
   if (command === "/findserie") {
     if (text === command) {
-      await requestManualInput(chatId, "Scrivi il titolo della serie e, se vuoi, stagione ed episodio.", messageId, "/findserie", "Titolo della serie");
+      await requestManualInput(chatId, "Scrivi il titolo della serie.", messageId, "/findserie", "Titolo della serie");
       return;
     }
 
@@ -1589,6 +1843,21 @@ async function runPolling() {
   let offset = 0;
   pollingRunning = true;
   log("info", "polling.start", { pollIntervalMs: POLL_INTERVAL_MS });
+
+  try {
+    const pendingUpdates = await telegramApi("getUpdates", {
+      timeout: 0,
+      offset: -1,
+      allowed_updates: ["message", "callback_query"],
+    });
+    const latestUpdate = pendingUpdates?.result?.[0];
+    if (latestUpdate?.update_id !== undefined) {
+      offset = latestUpdate.update_id + 1;
+      log("info", "polling.pending_updates.skipped", { offset });
+    }
+  } catch (err) {
+    log("warn", "polling.pending_updates.skip_failed", { error: err?.message || String(err) });
+  }
 
   while (pollingRunning) {
     try {
